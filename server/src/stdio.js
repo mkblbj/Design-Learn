@@ -242,7 +242,7 @@ server.tool(
 
 server.tool(
   'import_design',
-  '输入一个网址，提取页面 UI 并生成参考代码。比如："从这个网址导入：https://example.com"、"提取 https://xxx.com 的按钮样式"',
+  '输入一个网址，提取页面 UI 并生成参考代码。比如："从这个网址导入：https://example.com"、"提取 https://xxx.com 的按钮样式"。注意：此功能需要 HTTP 服务器运行（设置 DESIGN_LEARN_STDIO_START_HTTP_SERVER=1 或单独运行 design-learn-server）',
   {
     url: z.string().url(),
     useAI: z.boolean().optional(),
@@ -250,7 +250,6 @@ server.tool(
   },
   async ({ url, useAI, designId }) => {
     // In stdio mode, we need to call the HTTP API
-    // The HTTP server is started as a child process
     const port = process.env.PORT || process.env.DESIGN_LEARN_PORT || 3100;
     try {
       const response = await fetch(`http://localhost:${port}/api/import/url`, {
@@ -264,6 +263,19 @@ server.tool(
         structuredContent: data,
       };
     } catch (error) {
+      const isConnectionError = error.cause?.code === 'ECONNREFUSED' || error.message.includes('ECONNREFUSED');
+      if (isConnectionError) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: 'HTTP server not running',
+              hint: 'import_design requires HTTP server. Either:\n1. Set env DESIGN_LEARN_STDIO_START_HTTP_SERVER=1\n2. Or run "design-learn-server" separately',
+              port,
+            }, null, 2),
+          }],
+        };
+      }
       return {
         content: [{ type: 'text', text: JSON.stringify({ error: error.message }, null, 2) }],
       };
@@ -310,9 +322,13 @@ server.prompt(
 
 async function main() {
   await ensurePlaywright();
-  const startHttpServer = process.env.DESIGN_LEARN_STDIO_START_HTTP_SERVER !== '0';
+  
+  // HTTP server is disabled by default in stdio mode to avoid:
+  // 1. Port conflicts (EADDRINUSE) when multiple instances run
+  // 2. stdout pollution breaking MCP JSON-RPC protocol
+  // Set DESIGN_LEARN_STDIO_START_HTTP_SERVER=1 to enable if needed for import_design tool
+  const startHttpServer = process.env.DESIGN_LEARN_STDIO_START_HTTP_SERVER === '1';
   if (startHttpServer) {
-    // 同时启动 HTTP 服务（给 Chrome/VSCode 插件用）
     const httpServer = spawn('node', [path.join(__dirname, 'server.js')], {
       stdio: 'ignore',
       detached: true,
@@ -320,6 +336,7 @@ async function main() {
     });
     httpServer.unref();
   }
+  
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
